@@ -185,6 +185,10 @@ class TestDualOSRGui(unittest.TestCase):
             gui.reverse_l2_var.get.return_value = True
             gui.tilt_comp_var = MagicMock()
             gui.tilt_comp_var.get.return_value = 10.0
+            gui.height_offset_a_var = MagicMock()
+            gui.height_offset_a_var.get.return_value = 100.0
+            gui.height_offset_b_var = MagicMock()
+            gui.height_offset_b_var.get.return_value = -100.0
 
             gui.update_params()
 
