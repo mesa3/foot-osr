@@ -29,10 +29,11 @@ class TCodeWSServer:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
-        start_server = websockets.serve(self._handler, "0.0.0.0", self.port)
-        self.server = self.loop.run_until_complete(start_server)
+        async def _serve():
+            self.server = await websockets.serve(self._handler, "0.0.0.0", self.port)
+            logger.info(f"WebSocket server started on port {self.port}")
 
-        logger.info(f"WebSocket server started on port {self.port}")
+        self.loop.run_until_complete(_serve())
         self.loop.run_forever()
 
     def start(self):
