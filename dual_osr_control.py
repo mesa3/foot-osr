@@ -86,7 +86,8 @@ class DualOSRController:
         self.ankle_angle_offset = 50.0 # Base R2 offset
         self.roll_angle_offset = 50.0 # Base R1 offset
         self.motion_mode = "v_stroke"
-        self.reverse_l2 = False # Reverse L2 compensation direction
+        self.reverse_l2 = False
+        self.tilt_compensation = 0.0 # L2 base tilt offset
 
 
         # Device status
@@ -171,7 +172,7 @@ class DualOSRController:
 
             # Centers (0-9999)
             center_l0 = (self.base_squeeze / 100.0) * 9999
-            center_l2 = 5000
+            center_l2 = 5000 + (self.tilt_compensation / 100.0) * 5000
             center_a_r1 = (self.roll_angle_offset / 100.0) * 9999
             center_b_r1 = 9999 - center_a_r1 # Mirror R1 for Device B so they tilt in the same physical direction
             center_r0 = 5000 # Neutral twist
@@ -769,6 +770,12 @@ class DualOSRGui:
         self.twist_scale = ttk.Scale(adv_frame, from_=0.0, to=100.0, variable=self.twist_amp_var, command=self.update_params)
         self.twist_scale.pack(fill="x", padx=5, pady=2)
 
+        # Tilt Compensation (L2 Offset)
+        ttk.Label(adv_frame, text="Tilt Compensation L2 Base (%):").pack(anchor="w", padx=5)
+        self.tilt_comp_var = tk.DoubleVar(value=0.0)
+        self.tilt_comp_scale = ttk.Scale(adv_frame, from_=-100.0, to=100.0, variable=self.tilt_comp_var, command=self.update_params)
+        self.tilt_comp_scale.pack(fill="x", padx=5, pady=2)
+
         self.reverse_l2_var = tk.BooleanVar(value=False)
         self.reverse_l2_check = ttk.Checkbutton(adv_frame, text="Reverse L2 Compensation Direction", variable=self.reverse_l2_var, command=self.update_params)
         self.reverse_l2_check.pack(anchor="w", padx=5, pady=5)
@@ -828,6 +835,7 @@ class DualOSRGui:
         self.controller.roll_amp = self.roll_amp_var.get()
         self.controller.twist_amp = self.twist_amp_var.get()
         self.controller.reverse_l2 = self.reverse_l2_var.get()
+        self.controller.tilt_compensation = self.tilt_comp_var.get()
 
         mode = self.mode_var.get()
         self.controller.motion_mode = mode
