@@ -153,13 +153,7 @@ class DualOSRController:
             except Exception:
                 pass
 
-    def motion_loop(self):
-        t = 0.0
-        dt = 0.02 # 50Hz update rate
-
-        while self.running:
-            start_time = time.time()
-
+    def calculate_frame(self, t):
             phase_a = 2 * math.pi * self.speed * t
             phase_b = phase_a + math.radians(self.phase_shift)
 
@@ -619,8 +613,19 @@ class DualOSRController:
                 cmd_b_parts.append(f"L0{clamp(pos_b):04d}")
 
             # Add timing interval
-            cmd_a = " ".join(cmd_a_parts) + " I20"
-            cmd_b = " ".join(cmd_b_parts) + " I20"
+            return " ".join(cmd_a_parts), " ".join(cmd_b_parts)
+
+    def motion_loop(self):
+        t = 0.0
+        dt = 0.02 # 50Hz update rate
+
+        while self.running:
+            start_time = time.time()
+
+            cmd_a_base, cmd_b_base = self.calculate_frame(t)
+
+            cmd_a = cmd_a_base + " I20"
+            cmd_b = cmd_b_base + " I20"
 
             self._send_cmd(self.ser_a, cmd_a, self.ws_server_a)
             self._send_cmd(self.ser_b, cmd_b, self.ws_server_b)
