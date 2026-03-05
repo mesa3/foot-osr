@@ -61,6 +61,9 @@ class TestTCodeWSServer(unittest.TestCase):
         self.server.broadcast("test message")
 
         mock_run_coroutine.assert_called_once()
+        # Close the coroutine to avoid RuntimeWarning
+        coro = mock_run_coroutine.call_args[0][0]
+        coro.close()
 
 class TestDualOSRController(unittest.TestCase):
     def setUp(self):
@@ -88,7 +91,7 @@ class TestDualOSRController(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertTrue(self.controller.connected_a)
-        mock_serial_class.assert_called_with("COM1", 921600, timeout=0.1)
+        mock_serial_class.assert_called_with("COM1", 115200, timeout=0.1)
 
     @patch('dual_osr_control.serial.Serial')
     def test_connect_device_a_failure(self, mock_serial_class):
@@ -108,7 +111,7 @@ class TestDualOSRController(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertTrue(self.controller.connected_b)
-        mock_serial_class.assert_called_with("COM2", 921600, timeout=0.1)
+        mock_serial_class.assert_called_with("COM2", 115200, timeout=0.1)
 
     def test_send_cmd(self):
         mock_ser = MagicMock()
@@ -118,7 +121,7 @@ class TestDualOSRController(unittest.TestCase):
         self.controller._send_cmd(mock_ser, "L05000", mock_ws)
 
         mock_ws.broadcast.assert_called_with("L05000\n")
-        mock_ser.write.assert_called_with(b"L05000\n")
+        mock_ser.write.assert_called_with(b"L05000\r\n")
 
     def test_disconnect_all(self):
         self.controller.ser_a = MagicMock()
@@ -180,6 +183,8 @@ class TestDualOSRGui(unittest.TestCase):
             gui.roll_offset_var.get.return_value = 50.0
             gui.reverse_l2_var = MagicMock()
             gui.reverse_l2_var.get.return_value = True
+            gui.tilt_comp_var = MagicMock()
+            gui.tilt_comp_var.get.return_value = 10.0
 
             gui.update_params()
 

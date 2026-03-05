@@ -86,18 +86,20 @@ class DualOSRController:
         self.ankle_angle_offset = 50.0 # Base R2 offset
         self.roll_angle_offset = 50.0 # Base R1 offset
         self.motion_mode = "v_stroke"
-        self.reverse_l2 = False # Reverse L2 compensation direction
+        self.reverse_l2 = False
+        self.tilt_compensation = 0.0 # L2 base tilt offset
 
 
         # Device status
         self.connected_a = False
         self.connected_b = False
+        self.current_phase = 0.0
 
-    def connect_device_a(self, port):
+    def connect_device_a(self, port, baudrate=115200):
         if self.ser_a and self.ser_a.is_open:
             self.ser_a.close()
         try:
-            self.ser_a = serial.Serial(port, 921600, timeout=0.1)
+            self.ser_a = serial.Serial(port, baudrate, timeout=0.1)
             self.connected_a = True
             logger.info(f"Connected Device A on {port}")
             return True
@@ -106,11 +108,11 @@ class DualOSRController:
             self.connected_a = False
             return False
 
-    def connect_device_b(self, port):
+    def connect_device_b(self, port, baudrate=115200):
         if self.ser_b and self.ser_b.is_open:
             self.ser_b.close()
         try:
-            self.ser_b = serial.Serial(port, 921600, timeout=0.1)
+            self.ser_b = serial.Serial(port, baudrate, timeout=0.1)
             self.connected_b = True
             logger.info(f"Connected Device B on {port}")
             return True
@@ -141,25 +143,23 @@ class DualOSRController:
 
     def stop_motion(self):
         self.running = False
-        logger.info("Motion stopping...")
+        if self.thread and self.thread.is_alive():
+            self.thread.join()
+        logger.info("Motion stopped")
 
     def _send_cmd(self, ser, cmd, ws_server=None):
         if ws_server:
             ws_server.broadcast(f"{cmd}\n")
         if ser and ser.is_open:
             try:
-                ser.write(f"{cmd}\n".encode())
-            except Exception:
-                pass
+                ser.write(f"{cmd}\r\n".encode())
+            except Exception as e:
+                logger.error(f"Serial write error: {e}")
+                # We don't close here to avoid thread safety issues with GUI,
+                # but the error is now visible in the log.
 
-    def motion_loop(self):
-        t = 0.0
-        dt = 0.02 # 50Hz update rate
-
-        while self.running:
-            start_time = time.time()
-
-            phase_a = 2 * math.pi * self.speed * t
+    def calculate_frame(self):
+            phase_a = self.current_phase
             phase_b = phase_a + math.radians(self.phase_shift)
 
             # Amplitudes (0-5000)
@@ -171,7 +171,7 @@ class DualOSRController:
 
             # Centers (0-9999)
             center_l0 = (self.base_squeeze / 100.0) * 9999
-            center_l2 = 5000
+            center_l2 = 5000 + (self.tilt_compensation / 100.0) * 5000
             center_a_r1 = (self.roll_angle_offset / 100.0) * 9999
             center_b_r1 = 9999 - center_a_r1 # Mirror R1 for Device B so they tilt in the same physical direction
             center_r0 = 5000 # Neutral twist
@@ -217,7 +217,7 @@ class DualOSRController:
                 pos_b_l2 = center_l2 + (z_motion_b * l2_mult)
 
                 # R1 rolls dynamically out of phase with the stroke to create a massaging wave
-                # Using standard minus mirror for B + phase_b naturally achieves the physical alternating roll
+                # Using standard mirror for B + phase_b naturally achieves the physical alternating roll
                 pos_a_r1 = center_a_r1 + amp_r1 * math.cos(phase_a)
                 pos_b_r1 = center_b_r1 - amp_r1 * math.cos(phase_b)
 
@@ -278,8 +278,7 @@ class DualOSRController:
 
             elif self.motion_mode == "wrapping_twist":
                 # Hold a constant close squeeze (L0).
-                # Roll soles inwards (R1). Assuming +R1 is roll inwards for left foot, then -R1 is inwards for right foot.
-                # (Or vice versa, they should be out of phase to roll symmetrically relative to the center).
+                # Roll soles inwards (R1). Symmetrically relative to the center.
                 pos_a_r1 = center_a_r1 + amp_r1 * math.sin(phase_a)
                 pos_b_r1 = center_b_r1 - amp_r1 * math.sin(phase_a) # Mirror roll inwards
 
@@ -308,7 +307,7 @@ class DualOSRController:
                 fast_phase_b = phase_b * 2.0
 
                 # Toes point "down" to tap towards the center
-                # Assuming R2 < 5000 is pointing toes down. We sweep between 5000 and (5000 - amp_r2)
+                # Sweep between 5000 and (5000 - amp_r2)
                 pos_a_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_a)
                 pos_b_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_b)
 
@@ -339,7 +338,6 @@ class DualOSRController:
 
             elif self.motion_mode == "heel_press":
                 # Toes pitched heavily UP (away from target) to expose the heels.
-                # Assuming R2 > 5000 is pitch up.
                 pos_r2 = center_r2 + amp_r2
 
                 # Deep, slow squeezing L0
@@ -398,10 +396,8 @@ class DualOSRController:
             elif self.motion_mode == "foot_slap":
                 # Foot Slap V3 (严谨节奏的单脚轮流大力扇耳光)
                 # 节奏: A蓄力 -> A扇! -> A退回 -> B蓄力 -> B扇! -> B退回
-                # 在一方动作时，另一方完全停在远处（Parked），绝不干涉。
 
                 # director 进度 0.0 到 1.0 (控制完整的左右脚一轮)
-                # 减慢一点整体进度，给舵机留出“大力挥动”的物理时间
                 director = ( (phase_a * 0.4) % (2 * math.pi) ) / (2 * math.pi)
 
                 # 定义几个关键位置
@@ -449,7 +445,7 @@ class DualOSRController:
                     pos_a_l0 = l0_a
                     pos_a_l2 = center_l2 - (l2_off_a * l2_mult)
                     pos_a_r2 = r2_a
-                    pos_a_r1 = center_a_r1 # 不加roll，纯靠L2和R2的力量
+                    pos_a_r1 = center_a_r1
 
                     # B is parked
                     pos_b_l0 = park_l0
@@ -477,10 +473,7 @@ class DualOSRController:
 
             elif self.motion_mode == "glans_torture":
                 # Glans Torture (龟头折磨)
-                # Devices stay at the far extension limit (top of the stroke) and vibrate/knead intensely.
-
-                # Shift the center L0 to the far end (simulate staying at the tip)
-                # We use amp_l0 as the offset to push it out.
+                # Devices stay at the far extension limit and vibrate/knead intensely.
                 tip_center_l0 = center_l0 + (amp_l0 * 0.8)
 
                 # High frequency, micro amplitude
@@ -492,14 +485,14 @@ class DualOSRController:
 
                 pos_l0 = tip_center_l0 + z_motion
 
-                # L2 compensates the new tip center + micro vibration to stay on the parallel track
+                # L2 compensates the new tip center + micro vibration
                 base_l2_offset = amp_l0 * 0.8 * l2_mult
                 micro_l2_offset = z_motion * l2_mult
 
                 pos_a_l2 = center_l2 - base_l2_offset - micro_l2_offset
                 pos_b_l2 = center_l2 + base_l2_offset + micro_l2_offset
 
-                # Intense, fast kneading (R1 Roll + R2 Pitch)
+                # Intense, fast kneading
                 pos_a_r1 = center_a_r1 + (amp_r1 * 0.5) * math.sin(fast_phase * 1.5)
                 pos_b_r1 = center_b_r1 - (amp_r1 * 0.5) * math.sin(fast_phase * 1.5)
 
@@ -511,18 +504,14 @@ class DualOSRController:
 
             elif self.motion_mode == "edging_sole_show":
                 # Edging Sole Show (寸止展示脚底)
-                # Fast strokes followed by a sudden stop, pulling back, spreading wide, and pitching up to show soles.
+                # Fast strokes followed by a sudden stop, spreading wide, and pitching up.
 
                 # Director phase: slow cycle to toggle between stroking and showing
-                # Let's say 1 full director cycle = 5 fast stroke cycles.
-                # Director > 0 (stroking phase), Director < 0 (show phase)
                 director = math.sin(phase_a * 0.2)
                 fast_phase = phase_a * 2.0
 
                 if director > 0:
                     # Stroking Phase (Fast parallel v_stroke)
-                    # We add a smooth transition based on the director sine to avoid harsh snaps,
-                    # but for now a direct cut is fine since they are T-code commands.
                     z_motion = amp_l0 * math.sin(fast_phase)
 
                     pos_l0 = center_l0 + z_motion
@@ -536,37 +525,28 @@ class DualOSRController:
                     pos_b_r1 = center_b_r1
 
                 else:
-                    # Show Phase (Pulled back, spread open, soles pitched up)
-                    # Pull L0 all the way back
+                    # Show Phase
                     pos_l0 = center_l0 - amp_l0
-
-                    # Spread L2 wide (outward)
-                    # L2 moving outward: A moves left (subtract), B moves right (add)
                     pos_a_l2 = center_l2 - (amp_l0 * l2_mult)
                     pos_b_l2 = center_l2 + (amp_l0 * l2_mult)
 
-                    # Pitch (R2) heavily up to expose sole
+                    # Pitch (R2) heavily up
                     pos_a_r2 = center_r2 + amp_r2
                     pos_b_r2 = center_r2 + amp_r2
 
-                    # Roll (R1) optional, let's keep it flat or slight inward
                     pos_a_r1 = center_a_r1
                     pos_b_r1 = center_b_r1
 
                 cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
             elif self.motion_mode == "single_foot_tease_left":
-                # Left foot teases with rapid flickering pitch, Right foot stays still at base squeeze
                 fast_phase_a = phase_a * 2.0
-
-                # Active Left (Device A)
                 pos_a_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_a)
 
                 z_motion_a = (amp_l0 * 0.1) * math.sin(phase_a)
                 pos_a_l0 = center_l0 + z_motion_a
                 pos_a_l2 = center_l2 - (z_motion_a * l2_mult)
 
-                # Static Right (Device B)
                 pos_b_r2 = center_r2
                 pos_b_l0 = center_l0
                 pos_b_l2 = center_l2
@@ -575,14 +555,10 @@ class DualOSRController:
                 cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "single_foot_tease_right":
-                # Right foot teases with rapid flickering pitch, Left foot stays still at base squeeze
-                fast_phase_b = phase_a * 2.0 # phase_a is fine here since it's isolated
-
-                # Static Left (Device A)
+                fast_phase_b = phase_a * 2.0
                 pos_a_r2 = center_r2
                 pos_a_l0 = center_l0
 
-                # Active Right (Device B)
                 pos_b_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_b)
                 pos_b_l0 = center_l0 + (amp_l0 * 0.1) * math.sin(phase_a)
 
@@ -593,7 +569,6 @@ class DualOSRController:
                 z_motion_a = amp_l0 * math.sin(phase_a)
                 pos_a_l0 = center_l0 + z_motion_a
                 pos_a_l2 = center_l2 - (z_motion_a * l2_mult)
-
                 pos_b_l0 = center_l0
                 pos_b_l2 = center_l2
 
@@ -603,8 +578,7 @@ class DualOSRController:
             elif self.motion_mode == "single_foot_stroke_right":
                 pos_a_l0 = center_l0
                 pos_a_l2 = center_l2
-
-                z_motion_b = amp_l0 * math.sin(phase_a) # Use phase_a for the active foot
+                z_motion_b = amp_l0 * math.sin(phase_a)
                 pos_b_l0 = center_l0 + z_motion_b
                 pos_b_l2 = center_l2 + (z_motion_b * l2_mult)
 
@@ -617,17 +591,28 @@ class DualOSRController:
                 cmd_a_parts.append(f"L0{clamp(pos_a):04d}")
                 cmd_b_parts.append(f"L0{clamp(pos_b):04d}")
 
-            # Add timing interval
-            cmd_a = " ".join(cmd_a_parts) + " I20"
-            cmd_b = " ".join(cmd_b_parts) + " I20"
+            return " ".join(cmd_a_parts), " ".join(cmd_b_parts)
+
+    def motion_loop(self):
+        self.current_phase = 0.0
+        dt = 0.02 # 50Hz update rate
+
+        while self.running:
+            start_time = time.time()
+
+            cmd_a_base, cmd_b_base = self.calculate_frame()
+
+            cmd_a = cmd_a_base + " I20"
+            cmd_b = cmd_b_base + " I20"
 
             self._send_cmd(self.ser_a, cmd_a, self.ws_server_a)
             self._send_cmd(self.ser_b, cmd_b, self.ws_server_b)
 
-            # Update time
-            t += dt
+            # Update phase instead of absolute time to allow smooth frequency changes
+            self.current_phase += 2 * math.pi * self.speed * dt
+            # Keep phase in [0, 2pi] to avoid float precision issues over time
+            self.current_phase %= 2 * math.pi
 
-            # Maintain loop timing
             elapsed = time.time() - start_time
             sleep_time = max(0, dt - elapsed)
             time.sleep(sleep_time)
@@ -688,6 +673,12 @@ class DualOSRGui:
         self.combo_b.pack(side="left", padx=5)
         self.btn_connect_b = ttk.Button(dev_b_frame, text="Connect", command=self.toggle_connect_b)
         self.btn_connect_b.pack(side="left")
+
+        # Baud rate
+        ttk.Label(conn_frame, text="Baud Rate:").pack(pady=(5, 0))
+        self.baud_var = tk.IntVar(value=115200)
+        self.baud_combo = ttk.Combobox(conn_frame, textvariable=self.baud_var, values=[9600, 19200, 38400, 57600, 115200, 250000, 500000, 921600, 1000000, 2000000], state="readonly", width=15)
+        self.baud_combo.pack(pady=2)
 
         ttk.Button(conn_frame, text="Refresh Ports", command=self.refresh_ports).pack(pady=5)
 
@@ -763,6 +754,12 @@ class DualOSRGui:
         self.twist_scale = ttk.Scale(adv_frame, from_=0.0, to=100.0, variable=self.twist_amp_var, command=self.update_params)
         self.twist_scale.pack(fill="x", padx=5, pady=2)
 
+        # Tilt Compensation (L2 Offset)
+        ttk.Label(adv_frame, text="Tilt Compensation L2 Base (%):").pack(anchor="w", padx=5)
+        self.tilt_comp_var = tk.DoubleVar(value=0.0)
+        self.tilt_comp_scale = ttk.Scale(adv_frame, from_=-100.0, to=100.0, variable=self.tilt_comp_var, command=self.update_params)
+        self.tilt_comp_scale.pack(fill="x", padx=5, pady=2)
+
         self.reverse_l2_var = tk.BooleanVar(value=False)
         self.reverse_l2_check = ttk.Checkbutton(adv_frame, text="Reverse L2 Compensation Direction", variable=self.reverse_l2_var, command=self.update_params)
         self.reverse_l2_check.pack(anchor="w", padx=5, pady=5)
@@ -794,7 +791,7 @@ class DualOSRGui:
 
     def toggle_connect_a(self):
         if not self.controller.connected_a:
-            if self.controller.connect_device_a(self.port_a.get()):
+            if self.controller.connect_device_a(self.port_a.get(), self.baud_var.get()):
                 self.btn_connect_a.config(text="Disconnect")
         else:
             self.controller.ser_a.close()
@@ -804,7 +801,7 @@ class DualOSRGui:
 
     def toggle_connect_b(self):
         if not self.controller.connected_b:
-            if self.controller.connect_device_b(self.port_b.get()):
+            if self.controller.connect_device_b(self.port_b.get(), self.baud_var.get()):
                 self.btn_connect_b.config(text="Disconnect")
         else:
             self.controller.ser_b.close()
@@ -822,6 +819,7 @@ class DualOSRGui:
         self.controller.roll_amp = self.roll_amp_var.get()
         self.controller.twist_amp = self.twist_amp_var.get()
         self.controller.reverse_l2 = self.reverse_l2_var.get()
+        self.controller.tilt_compensation = self.tilt_comp_var.get()
 
         mode = self.mode_var.get()
         self.controller.motion_mode = mode
@@ -858,8 +856,10 @@ class DualOSRGui:
             self.controller.stop_motion()
             if self.controller.ws_server_a:
                 self.controller.ws_server_a.stop()
+                self.controller.ws_server_a = None
             if self.controller.ws_server_b:
                 self.controller.ws_server_b.stop()
+                self.controller.ws_server_b = None
             self.btn_start.config(text="START MOTION")
 
 class TextHandler(logging.Handler):
