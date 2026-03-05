@@ -63,7 +63,8 @@ class TestSystemIntegration(unittest.TestCase):
         gui.controller.running = True
 
         # Simulate the first frame calculation
-        cmd_a_base, cmd_b_base = gui.controller.calculate_frame(0.0)
+        gui.controller.current_phase = 0.0
+        cmd_a_base, cmd_b_base = gui.controller.calculate_frame()
         cmd_a = cmd_a_base + " I20"
         cmd_b = cmd_b_base + " I20"
 

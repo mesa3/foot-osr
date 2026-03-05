@@ -45,8 +45,9 @@ class TestKinematics(unittest.TestCase):
     def test_v_stroke_pure_center(self):
         self.controller.motion_mode = "v_stroke"
         self.controller.stroke = 0.0 # No motion
+        self.controller.current_phase = 0.0
 
-        cmd_a, cmd_b = self.controller.calculate_frame(0.0)
+        cmd_a, cmd_b = self.controller.calculate_frame()
 
         a = self.parse_tcode(cmd_a)
         b = self.parse_tcode(cmd_b)
@@ -65,9 +66,9 @@ class TestKinematics(unittest.TestCase):
         self.controller.motion_mode = "v_stroke"
         self.controller.stroke = 50.0 # Amp is 2500
 
-        # At t=0.25, phase is 2*pi * 1 * 0.25 = pi/2. sin(pi/2) = 1
-        # pos_l0 = center_l0 + amp_l0 = 4999 + 2500 = 7499
-        cmd_a, cmd_b = self.controller.calculate_frame(0.25)
+        # phase = pi/2. sin(pi/2) = 1
+        self.controller.current_phase = 0.5 * math.pi
+        cmd_a, cmd_b = self.controller.calculate_frame()
 
         a = self.parse_tcode(cmd_a)
 
@@ -81,8 +82,9 @@ class TestKinematics(unittest.TestCase):
         self.controller.motion_mode = "v_stroke"
         self.controller.stroke = 0.0 # No motion
         self.controller.tilt_compensation = 20.0 # 20% offset on L2 base -> 5000 + 1000 = 6000
+        self.controller.current_phase = 0.0
 
-        cmd_a, cmd_b = self.controller.calculate_frame(0.0)
+        cmd_a, cmd_b = self.controller.calculate_frame()
         a = self.parse_tcode(cmd_a)
 
         self.assertEqual(a['L2'], 6000)
@@ -91,16 +93,13 @@ class TestKinematics(unittest.TestCase):
         self.controller.motion_mode = "v_stroke"
         self.controller.base_squeeze = 100.0 # Center L0 is 9999
         self.controller.stroke = 100.0 # Amp is 5000
-        # Normal max would be 14999. Should clamp to 9999.
+        # phase = pi/2. sin(pi/2) = 1
+        self.controller.current_phase = 0.5 * math.pi
 
-        cmd_a, cmd_b = self.controller.calculate_frame(0.25)
+        cmd_a, cmd_b = self.controller.calculate_frame()
         a = self.parse_tcode(cmd_a)
 
-        # We also need to test if the center clamp logic limits it.
-        # Actually in code:
-        # if center_l0 + amp_l0 > 9999: center_l0 = 9999 - amp_l0
-        # center = 9999, amp = 5000 -> center becomes 4999.
-        # So pos_l0 = 4999 + 5000 = 9999.
+        # pos_l0 = 4999 + 5000 = 9999.
         self.assertEqual(a['L0'], 9999)
 
 
@@ -109,10 +108,9 @@ class TestKinematics(unittest.TestCase):
         self.controller.speed = 1.0
         self.controller.stroke = 50.0 # amp = 2500
         self.controller.phase_shift = 180 # pi radians difference
+        self.controller.current_phase = 0.5 * math.pi
 
-        # t = 0.25 -> phase_a = pi/2, sin = 1
-        # phase_b = pi/2 + pi = 3pi/2, sin = -1
-        cmd_a, cmd_b = self.controller.calculate_frame(0.25)
+        cmd_a, cmd_b = self.controller.calculate_frame()
         a = self.parse_tcode(cmd_a)
         b = self.parse_tcode(cmd_b)
 

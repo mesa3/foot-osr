@@ -61,6 +61,9 @@ class TestTCodeWSServer(unittest.TestCase):
         self.server.broadcast("test message")
 
         mock_run_coroutine.assert_called_once()
+        # Close the coroutine to avoid RuntimeWarning
+        coro = mock_run_coroutine.call_args[0][0]
+        coro.close()
 
 class TestDualOSRController(unittest.TestCase):
     def setUp(self):
