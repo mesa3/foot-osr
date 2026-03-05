@@ -88,7 +88,7 @@ class TestDualOSRController(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertTrue(self.controller.connected_a)
-        mock_serial_class.assert_called_with("COM1", 921600, timeout=0.1)
+        mock_serial_class.assert_called_with("COM1", 115200, timeout=0.1)
 
     @patch('dual_osr_control.serial.Serial')
     def test_connect_device_a_failure(self, mock_serial_class):
@@ -108,7 +108,7 @@ class TestDualOSRController(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertTrue(self.controller.connected_b)
-        mock_serial_class.assert_called_with("COM2", 921600, timeout=0.1)
+        mock_serial_class.assert_called_with("COM2", 115200, timeout=0.1)
 
     def test_send_cmd(self):
         mock_ser = MagicMock()
@@ -118,7 +118,7 @@ class TestDualOSRController(unittest.TestCase):
         self.controller._send_cmd(mock_ser, "L05000", mock_ws)
 
         mock_ws.broadcast.assert_called_with("L05000\n")
-        mock_ser.write.assert_called_with(b"L05000\n")
+        mock_ser.write.assert_called_with(b"L05000\r\n")
 
     def test_disconnect_all(self):
         self.controller.ser_a = MagicMock()

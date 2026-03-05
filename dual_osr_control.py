@@ -93,11 +93,11 @@ class DualOSRController:
         self.connected_a = False
         self.connected_b = False
 
-    def connect_device_a(self, port):
+    def connect_device_a(self, port, baudrate=115200):
         if self.ser_a and self.ser_a.is_open:
             self.ser_a.close()
         try:
-            self.ser_a = serial.Serial(port, 921600, timeout=0.1)
+            self.ser_a = serial.Serial(port, baudrate, timeout=0.1)
             self.connected_a = True
             logger.info(f"Connected Device A on {port}")
             return True
@@ -106,11 +106,11 @@ class DualOSRController:
             self.connected_a = False
             return False
 
-    def connect_device_b(self, port):
+    def connect_device_b(self, port, baudrate=115200):
         if self.ser_b and self.ser_b.is_open:
             self.ser_b.close()
         try:
-            self.ser_b = serial.Serial(port, 921600, timeout=0.1)
+            self.ser_b = serial.Serial(port, baudrate, timeout=0.1)
             self.connected_b = True
             logger.info(f"Connected Device B on {port}")
             return True
@@ -148,7 +148,7 @@ class DualOSRController:
             ws_server.broadcast(f"{cmd}\n")
         if ser and ser.is_open:
             try:
-                ser.write(f"{cmd}\n".encode())
+                ser.write(f"{cmd}\r\n".encode())
             except Exception:
                 pass
 
@@ -689,6 +689,12 @@ class DualOSRGui:
         self.btn_connect_b = ttk.Button(dev_b_frame, text="Connect", command=self.toggle_connect_b)
         self.btn_connect_b.pack(side="left")
 
+        # Baud rate
+        ttk.Label(conn_frame, text="Baud Rate:").pack(pady=(5, 0))
+        self.baud_var = tk.IntVar(value=115200)
+        self.baud_combo = ttk.Combobox(conn_frame, textvariable=self.baud_var, values=[9600, 19200, 38400, 57600, 115200, 250000, 500000, 921600, 1000000, 2000000], state="readonly", width=15)
+        self.baud_combo.pack(pady=2)
+
         ttk.Button(conn_frame, text="Refresh Ports", command=self.refresh_ports).pack(pady=5)
 
         # --- Motion Control Section ---
@@ -794,7 +800,7 @@ class DualOSRGui:
 
     def toggle_connect_a(self):
         if not self.controller.connected_a:
-            if self.controller.connect_device_a(self.port_a.get()):
+            if self.controller.connect_device_a(self.port_a.get(), self.baud_var.get()):
                 self.btn_connect_a.config(text="Disconnect")
         else:
             self.controller.ser_a.close()
@@ -804,7 +810,7 @@ class DualOSRGui:
 
     def toggle_connect_b(self):
         if not self.controller.connected_b:
-            if self.controller.connect_device_b(self.port_b.get()):
+            if self.controller.connect_device_b(self.port_b.get(), self.baud_var.get()):
                 self.btn_connect_b.config(text="Disconnect")
         else:
             self.controller.ser_b.close()
