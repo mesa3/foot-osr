@@ -639,11 +639,62 @@ class DualOSRGui:
         self.root.geometry("600x900")
         self.controller = DualOSRController()
 
+        # Create a main frame
+        self.main_frame = ttk.Frame(self.root)
+        self.main_frame.pack(fill=tk.BOTH, expand=1)
+
+        # Create a canvas
+        self.canvas = tk.Canvas(self.main_frame)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
+        # Add a scrollbar to the canvas
+        self.scrollbar = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure the canvas
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.bind(
+            '<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        # Create another frame inside the canvas
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        # Add that new frame to a window in the canvas
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        # Configure width of scrollable frame to match canvas
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            )
+        )
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+
+        # Bind mousewheel
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.root.bind_all("<Button-4>", self._on_mousewheel)
+        self.root.bind_all("<Button-5>", self._on_mousewheel)
+
         self.create_widgets()
 
+    def _on_canvas_configure(self, event):
+        # update inner frame width to fill the canvas
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        # Windows/Mac/Linux cross platform
+        if hasattr(event, 'num') and event.num == 5 or getattr(event, 'delta', 0) < 0:
+            self.canvas.yview_scroll(1, "units")
+        elif hasattr(event, 'num') and event.num == 4 or getattr(event, 'delta', 0) > 0:
+            self.canvas.yview_scroll(-1, "units")
+
     def create_widgets(self):
+        # Change parent frame variable for widgets
+        parent = self.scrollable_frame
         # --- WebSocket Section ---
-        ws_frame = ttk.LabelFrame(self.root, text="WebSocket Servers")
+        ws_frame = ttk.LabelFrame(self.scrollable_frame, text="WebSocket Servers")
         ws_frame.pack(fill="x", padx=10, pady=5)
 
         row_ws = ttk.Frame(ws_frame)
@@ -661,7 +712,7 @@ class DualOSRGui:
         ttk.Entry(row_ws, textvariable=self.ws_port_b, width=6).pack(side="left")
 
         # --- Connection Section ---
-        conn_frame = ttk.LabelFrame(self.root, text="Connections")
+        conn_frame = ttk.LabelFrame(self.scrollable_frame, text="Connections")
         conn_frame.pack(fill="x", padx=10, pady=5)
 
         # Device A
@@ -693,7 +744,7 @@ class DualOSRGui:
         ttk.Button(conn_frame, text="Refresh Ports", command=self.refresh_ports).pack(pady=5)
 
         # --- Motion Control Section ---
-        ctrl_frame = ttk.LabelFrame(self.root, text="Motion Control")
+        ctrl_frame = ttk.LabelFrame(self.scrollable_frame, text="Motion Control")
         ctrl_frame.pack(fill="x", padx=10, pady=5)
 
         # Speed
@@ -774,7 +825,7 @@ class DualOSRGui:
         self.reverse_l2_check = ttk.Checkbutton(adv_frame, text="Reverse L2 Compensation Direction", variable=self.reverse_l2_var, command=self.update_params)
         self.reverse_l2_check.pack(anchor="w", padx=5, pady=5)
         # --- Calibration Section ---
-        calib_frame = ttk.LabelFrame(self.root, text="Calibration & Initialization")
+        calib_frame = ttk.LabelFrame(self.scrollable_frame, text="Calibration & Initialization")
         calib_frame.pack(fill="x", padx=10, pady=5)
 
         self.btn_init = ttk.Button(calib_frame, text="INITIALIZE (Go to Neutral)", command=self.go_to_neutral)
@@ -791,11 +842,11 @@ class DualOSRGui:
         self.height_offset_b_scale.pack(fill="x", padx=5, pady=2)
 
         # Start/Stop
-        self.btn_start = ttk.Button(self.root, text="START MOTION", command=self.toggle_motion)
+        self.btn_start = ttk.Button(self.scrollable_frame, text="START MOTION", command=self.toggle_motion)
         self.btn_start.pack(fill="x", padx=20, pady=10, ipady=10)
 
         # --- Log Section ---
-        log_frame = ttk.LabelFrame(self.root, text="Log")
+        log_frame = ttk.LabelFrame(self.scrollable_frame, text="Log")
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
         self.log_text = scrolledtext.ScrolledText(log_frame, height=10, state='disabled')
         self.log_text.pack(fill="both", expand=True)
