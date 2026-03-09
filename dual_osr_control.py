@@ -17,6 +17,7 @@ class TCodeWSServer:
         self.loop = None
         self.running = False
         self.thread = None
+        self.server = None
 
     async def _handler(self, websocket, path=None):
         self.clients.add(websocket)
@@ -30,11 +31,17 @@ class TCodeWSServer:
         asyncio.set_event_loop(self.loop)
 
         async def _serve():
-            self.server = await websockets.serve(self._handler, "0.0.0.0", self.port)
-            logger.info(f"WebSocket server started on port {self.port}")
+            try:
+                self.server = await websockets.serve(self._handler, "0.0.0.0", self.port)
+                logger.info(f"WebSocket server started on port {self.port}")
+            except OSError as e:
+                logger.error(f"Failed to start WebSocket server on port {self.port}: {e}")
+                self.running = False
+                return
 
         self.loop.run_until_complete(_serve())
-        self.loop.run_forever()
+        if self.running:
+            self.loop.run_forever()
 
     def start(self):
         if not self.running:
@@ -47,7 +54,8 @@ class TCodeWSServer:
             self.running = False
             # Safely stop server without hanging
             try:
-                self.loop.call_soon_threadsafe(self.server.close)
+                if self.server:
+                    self.loop.call_soon_threadsafe(self.server.close)
                 self.loop.call_soon_threadsafe(self.loop.stop)
             except RuntimeError:
                 pass # Event loop might be already closed
@@ -950,12 +958,15 @@ class DualOSRGui:
             self.btn_start.config(text="STOP MOTION")
         else:
             self.controller.stop_motion()
-            if self.controller.ws_server_a:
-                self.controller.ws_server_a.stop()
-                self.controller.ws_server_a = None
-            if self.controller.ws_server_b:
-                self.controller.ws_server_b.stop()
-                self.controller.ws_server_b = None
+            try:
+                if self.controller.ws_server_a:
+                    self.controller.ws_server_a.stop()
+                    self.controller.ws_server_a = None
+                if self.controller.ws_server_b:
+                    self.controller.ws_server_b.stop()
+                    self.controller.ws_server_b = None
+            except Exception as e:
+                logger.error(f"Error stopping WebSockets: {e}")
             self.btn_start.config(text="START MOTION")
 
 class TextHandler(logging.Handler):
