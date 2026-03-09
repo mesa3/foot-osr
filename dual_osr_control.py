@@ -112,6 +112,18 @@ class DualOSRController:
         self.is_initializing = False
 
 
+        # Height Offset Parameters (L0 offset)
+        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
+        self.height_offset_b = 0
+        self.is_initializing = False
+
+
+        # Height Offset Parameters (L0 offset)
+        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
+        self.height_offset_b = 0
+        self.is_initializing = False
+
+
     def connect_device_a(self, port, baudrate=115200):
         if self.ser_a and self.ser_a.is_open:
             self.ser_a.close()
@@ -141,7 +153,7 @@ class DualOSRController:
     def disconnect_all(self):
         self.running = False
         if self.thread and self.thread.is_alive():
-            self.thread.join()
+            self.thread.join(timeout=0.2)
 
         if self.ser_a and self.ser_a.is_open:
             self.ser_a.close()
@@ -150,6 +162,20 @@ class DualOSRController:
         self.connected_a = False
         self.connected_b = False
         logger.info("All devices disconnected")
+
+    def go_to_neutral(self):
+        self.is_initializing = True
+
+        # Calculate neutral positions applying the offsets
+        l0_a = max(0, min(9999, 5000 + getattr(self, "height_offset_a", 0)))
+        l0_b = max(0, min(9999, 5000 + getattr(self, "height_offset_b", 0)))
+
+        cmd_a = f"L0{l0_a:04d} I1000"
+        cmd_b = f"L0{l0_b:04d} I1000"
+
+        self._send_cmd(self.ser_a, cmd_a, self.ws_server_a)
+        self._send_cmd(self.ser_b, cmd_b, self.ws_server_b)
+        logger.info(f"Initialized to Neutral - A: {l0_a}, B: {l0_b}")
 
     def start_motion(self):
         if not self.running:
@@ -223,8 +249,8 @@ class DualOSRController:
                 pos_a_l2 = center_l2 - (z_motion * l2_mult)
                 pos_b_l2 = center_l2 + (z_motion * l2_mult)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
 
 
             elif self.motion_mode == "wave_rub_up_down":
@@ -244,8 +270,8 @@ class DualOSRController:
                 pos_a_r1 = center_a_r1 + amp_r1 * math.cos(phase_a)
                 pos_b_r1 = center_b_r1 - amp_r1 * math.cos(phase_b)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "wave_rub_front_back":
                 # Front-back wave rubbing (前后波浪形揉搓)
@@ -261,8 +287,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + amp_r2 * math.cos(fast_phase)
                 pos_b_r2 = center_r2 - amp_r2 * math.cos(fast_phase) # Alternating rapid pitch
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
 
             elif self.motion_mode == "static_rub_front_back":
                 # Static front-back rubbing (原地前后波浪形揉搓)
@@ -276,8 +302,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + amp_r2 * math.cos(fast_phase)
                 pos_b_r2 = center_r2 - amp_r2 * math.cos(fast_phase) # Alternating rapid pitch
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
             elif self.motion_mode == "alternating_step":
                 # Alternating strokes with parallel L2 compensation
                 z_motion_a = amp_l0 * math.sin(phase_a)
@@ -296,8 +322,8 @@ class DualOSRController:
                 pos_a_r1 = center_a_r1 + amp_r1 * math.sin(phase_a)
                 pos_b_r1 = center_b_r1 - amp_r1 * math.sin(phase_b)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "wrapping_twist":
                 # Hold a constant close squeeze (L0).
@@ -309,8 +335,8 @@ class DualOSRController:
                 pos_a_r0 = center_r0 + amp_r0 * math.cos(phase_a)
                 pos_b_r0 = center_r0 + amp_r0 * math.cos(phase_b) # Alternating twist
 
-                cmd_a_parts.extend([f"L0{clamp(center_l0 + self.height_offset_a):04d}", f"R1{clamp(pos_a_r1):04d}", f"R0{clamp(pos_a_r0):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(center_l0 + self.height_offset_b):04d}", f"R1{clamp(pos_b_r1):04d}", f"R0{clamp(pos_b_r0):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(center_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"R1{clamp(pos_a_r1):04d}", f"R0{clamp(pos_a_r0):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(center_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"R1{clamp(pos_b_r1):04d}", f"R0{clamp(pos_b_r0):04d}"])
 
             elif self.motion_mode == "sole_rub":
                 pos_a_r2 = center_r2 + amp_r2 * math.sin(phase_a)
@@ -319,8 +345,8 @@ class DualOSRController:
                 pos_a_r1 = center_a_r1 + amp_r1 * math.cos(phase_a)
                 pos_b_r1 = center_b_r1 + amp_r1 * math.cos(phase_b)
 
-                cmd_a_parts.extend([f"L0{clamp(center_l0 + self.height_offset_a):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(center_l0 + self.height_offset_b):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(center_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(center_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "toe_tease":
                 # Quick flickering pitch (R2) to tap the toes.
@@ -337,8 +363,8 @@ class DualOSRController:
                 # Slight pulsing L0
                 pos_l0 = center_l0 + (amp_l0 * 0.1) * math.sin(phase_a)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "edge_stroking":
                 # Feet roll heavily INWARDS (R1) to create a tight V-groove with the soles touching.
@@ -356,8 +382,8 @@ class DualOSRController:
                 # Fix pitch to stay parallel instead of bobbing up and down
                 pos_r2 = center_r2
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_r2):04d}"])
 
             elif self.motion_mode == "heel_press":
                 # Toes pitched heavily UP (away from target) to expose the heels.
@@ -371,8 +397,8 @@ class DualOSRController:
                 pos_a_r0 = center_r0 + amp_r0 * math.cos(slow_phase)
                 pos_b_r0 = center_r0 - amp_r0 * math.cos(slow_phase)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_a_r0):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_b_r0):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_a_r0):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_b_r0):04d}"])
 
             elif self.motion_mode == "circling_tease":
                 pos_a_r1 = center_a_r1 + amp_r1 * math.sin(phase_a)
@@ -381,8 +407,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + amp_r2 * math.cos(phase_a)
                 pos_b_r2 = center_r2 + amp_r2 * math.cos(phase_a)
 
-                cmd_a_parts.extend([f"L0{clamp(center_l0 + self.height_offset_a):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(center_l0 + self.height_offset_b):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(center_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(center_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
 
             elif self.motion_mode == "asymmetric_sprint":
@@ -413,8 +439,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + (amp_r2 * 0.5 * math.cos(sprint_phase) if z_motion_a != 0 else 0)
                 pos_b_r2 = center_r2 - (amp_r2 * 0.5 * math.cos(sprint_phase) if z_motion_b != 0 else 0)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
 
             elif self.motion_mode == "foot_slap":
                 # Foot Slap V3 (严谨节奏的单脚轮流大力扇耳光)
@@ -491,8 +517,8 @@ class DualOSRController:
                     pos_b_r2 = r2_b
                     pos_b_r1 = center_b_r1
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "glans_torture":
                 # Glans Torture (龟头折磨)
@@ -522,8 +548,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + (amp_r2 * 0.5) * math.cos(fast_phase)
                 pos_b_r2 = center_r2 - (amp_r2 * 0.5) * math.cos(fast_phase)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "edging_sole_show":
                 # Edging Sole Show (寸止展示脚底)
@@ -560,8 +586,8 @@ class DualOSRController:
                     pos_a_r1 = center_a_r1
                     pos_b_r1 = center_b_r1
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
             elif self.motion_mode == "single_foot_tease_left":
                 fast_phase_a = phase_a * 2.0
                 pos_a_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_a)
@@ -574,8 +600,8 @@ class DualOSRController:
                 pos_b_l0 = center_l0
                 pos_b_l2 = center_l2
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "single_foot_tease_right":
                 fast_phase_b = phase_a * 2.0
@@ -585,8 +611,8 @@ class DualOSRController:
                 pos_b_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_b)
                 pos_b_l0 = center_l0 + (amp_l0 * 0.1) * math.sin(phase_a)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "single_foot_stroke_left":
                 z_motion_a = amp_l0 * math.sin(phase_a)
@@ -595,8 +621,8 @@ class DualOSRController:
                 pos_b_l0 = center_l0
                 pos_b_l2 = center_l2
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
 
             elif self.motion_mode == "single_foot_stroke_right":
                 pos_a_l0 = center_l0
@@ -605,14 +631,14 @@ class DualOSRController:
                 pos_b_l0 = center_l0 + z_motion_b
                 pos_b_l2 = center_l2 + (z_motion_b * l2_mult)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
 
             else: # fallback
                 pos_a = center_l0 + amp_l0 * math.sin(phase_a)
                 pos_b = center_l0 + amp_l0 * math.sin(phase_b)
-                cmd_a_parts.append(f"L0{clamp(pos_a + self.height_offset_a):04d}")
-                cmd_b_parts.append(f"L0{clamp(pos_b + self.height_offset_b):04d}")
+                cmd_a_parts.append(f"L0{clamp(pos_a + self.height_offset_a + getattr(self, "height_offset_a", 0)):04d}")
+                cmd_b_parts.append(f"L0{clamp(pos_b + self.height_offset_b + getattr(self, "height_offset_b", 0)):04d}")
 
             return " ".join(cmd_a_parts), " ".join(cmd_b_parts)
 
