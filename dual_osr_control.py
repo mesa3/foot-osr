@@ -45,9 +45,13 @@ class TCodeWSServer:
     def stop(self):
         if self.running and self.loop:
             self.running = False
-            self.loop.call_soon_threadsafe(self.server.close)
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            logger.info("WebSocket server stopped")
+            # Safely stop server without hanging
+            try:
+                self.loop.call_soon_threadsafe(self.server.close)
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except RuntimeError:
+                pass # Event loop might be already closed
+            logger.info(f"WebSocket server {self.port} stopped")
 
     def broadcast(self, message):
         if not self.running or not self.clients or not self.loop:
@@ -149,9 +153,10 @@ class DualOSRController:
 
     def stop_motion(self):
         self.running = False
-        if self.thread and self.thread.is_alive():
-            self.thread.join()
-        logger.info("Motion stopped")
+        # Do not block the GUI thread waiting for serial writes or sleep to finish
+        # if self.thread and self.thread.is_alive():
+        #     self.thread.join(timeout=0.1)
+        logger.info("Motion stopped signal sent (waiting for thread to finish in background)")
 
     def _send_cmd(self, ser, cmd, ws_server=None):
         if ws_server:
