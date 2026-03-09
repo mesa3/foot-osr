@@ -17,6 +17,7 @@ class TCodeWSServer:
         self.loop = None
         self.running = False
         self.thread = None
+        self.server = None
 
     async def _handler(self, websocket, path=None):
         self.clients.add(websocket)
@@ -29,11 +30,18 @@ class TCodeWSServer:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
-        start_server = websockets.serve(self._handler, "0.0.0.0", self.port)
-        self.server = self.loop.run_until_complete(start_server)
+        async def _serve():
+            try:
+                self.server = await websockets.serve(self._handler, "0.0.0.0", self.port)
+                logger.info(f"WebSocket server started on port {self.port}")
+            except OSError as e:
+                logger.error(f"Failed to start WebSocket server on port {self.port}: {e}")
+                self.running = False
+                return
 
-        logger.info(f"WebSocket server started on port {self.port}")
-        self.loop.run_forever()
+        self.loop.run_until_complete(_serve())
+        if self.running:
+            self.loop.run_forever()
 
     def start(self):
         if not self.running:
@@ -44,9 +52,14 @@ class TCodeWSServer:
     def stop(self):
         if self.running and self.loop:
             self.running = False
-            self.loop.call_soon_threadsafe(self.server.close)
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            logger.info("WebSocket server stopped")
+            # Safely stop server without hanging
+            try:
+                if self.server:
+                    self.loop.call_soon_threadsafe(self.server.close)
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except RuntimeError:
+                pass # Event loop might be already closed
+            logger.info(f"WebSocket server {self.port} stopped")
 
     def broadcast(self, message):
         if not self.running or not self.clients or not self.loop:
@@ -88,12 +101,28 @@ class DualOSRController:
         self.motion_mode = "v_stroke"
         self.reverse_l2 = False
         self.tilt_compensation = 0.0 # L2 base tilt offset
-
-
         # Device status
         self.connected_a = False
         self.connected_b = False
         self.current_phase = 0.0
+
+        # Height Offset Parameters (L0 offset)
+        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
+        self.height_offset_b = 0
+        self.is_initializing = False
+
+
+        # Height Offset Parameters (L0 offset)
+        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
+        self.height_offset_b = 0
+        self.is_initializing = False
+
+
+        # Height Offset Parameters (L0 offset)
+        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
+        self.height_offset_b = 0
+        self.is_initializing = False
+
 
     def connect_device_a(self, port, baudrate=115200):
         if self.ser_a and self.ser_a.is_open:
@@ -124,7 +153,7 @@ class DualOSRController:
     def disconnect_all(self):
         self.running = False
         if self.thread and self.thread.is_alive():
-            self.thread.join()
+            self.thread.join(timeout=0.2)
 
         if self.ser_a and self.ser_a.is_open:
             self.ser_a.close()
@@ -134,8 +163,23 @@ class DualOSRController:
         self.connected_b = False
         logger.info("All devices disconnected")
 
+    def go_to_neutral(self):
+        self.is_initializing = True
+
+        # Calculate neutral positions applying the offsets
+        l0_a = max(0, min(9999, 5000 + getattr(self, "height_offset_a", 0)))
+        l0_b = max(0, min(9999, 5000 + getattr(self, "height_offset_b", 0)))
+
+        cmd_a = f"L0{l0_a:04d} I1000"
+        cmd_b = f"L0{l0_b:04d} I1000"
+
+        self._send_cmd(self.ser_a, cmd_a, self.ws_server_a)
+        self._send_cmd(self.ser_b, cmd_b, self.ws_server_b)
+        logger.info(f"Initialized to Neutral - A: {l0_a}, B: {l0_b}")
+
     def start_motion(self):
         if not self.running:
+            self.is_initializing = False  # Clear init flag on actual motion start
             self.running = True
             self.thread = threading.Thread(target=self.motion_loop, daemon=True)
             self.thread.start()
@@ -143,9 +187,10 @@ class DualOSRController:
 
     def stop_motion(self):
         self.running = False
-        if self.thread and self.thread.is_alive():
-            self.thread.join()
-        logger.info("Motion stopped")
+        # Do not block the GUI thread waiting for serial writes or sleep to finish
+        # if self.thread and self.thread.is_alive():
+        #     self.thread.join(timeout=0.1)
+        logger.info("Motion stopped signal sent (waiting for thread to finish in background)")
 
     def _send_cmd(self, ser, cmd, ws_server=None):
         if ws_server:
@@ -188,6 +233,10 @@ class DualOSRController:
             def clamp(val):
                 return max(0, min(9999, int(val)))
 
+            # Apply height offset
+            center_a_l0 = center_l0 + self.height_offset_a
+            center_b_l0 = center_l0 + self.height_offset_b
+
             cmd_a_parts = []
             cmd_b_parts = []
 
@@ -200,8 +249,8 @@ class DualOSRController:
                 pos_a_l2 = center_l2 - (z_motion * l2_mult)
                 pos_b_l2 = center_l2 + (z_motion * l2_mult)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
 
 
             elif self.motion_mode == "wave_rub_up_down":
@@ -221,8 +270,8 @@ class DualOSRController:
                 pos_a_r1 = center_a_r1 + amp_r1 * math.cos(phase_a)
                 pos_b_r1 = center_b_r1 - amp_r1 * math.cos(phase_b)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "wave_rub_front_back":
                 # Front-back wave rubbing (前后波浪形揉搓)
@@ -238,8 +287,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + amp_r2 * math.cos(fast_phase)
                 pos_b_r2 = center_r2 - amp_r2 * math.cos(fast_phase) # Alternating rapid pitch
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
 
             elif self.motion_mode == "static_rub_front_back":
                 # Static front-back rubbing (原地前后波浪形揉搓)
@@ -253,8 +302,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + amp_r2 * math.cos(fast_phase)
                 pos_b_r2 = center_r2 - amp_r2 * math.cos(fast_phase) # Alternating rapid pitch
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
             elif self.motion_mode == "alternating_step":
                 # Alternating strokes with parallel L2 compensation
                 z_motion_a = amp_l0 * math.sin(phase_a)
@@ -273,8 +322,8 @@ class DualOSRController:
                 pos_a_r1 = center_a_r1 + amp_r1 * math.sin(phase_a)
                 pos_b_r1 = center_b_r1 - amp_r1 * math.sin(phase_b)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "wrapping_twist":
                 # Hold a constant close squeeze (L0).
@@ -286,8 +335,8 @@ class DualOSRController:
                 pos_a_r0 = center_r0 + amp_r0 * math.cos(phase_a)
                 pos_b_r0 = center_r0 + amp_r0 * math.cos(phase_b) # Alternating twist
 
-                cmd_a_parts.extend([f"L0{clamp(center_l0):04d}", f"R1{clamp(pos_a_r1):04d}", f"R0{clamp(pos_a_r0):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(center_l0):04d}", f"R1{clamp(pos_b_r1):04d}", f"R0{clamp(pos_b_r0):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(center_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"R1{clamp(pos_a_r1):04d}", f"R0{clamp(pos_a_r0):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(center_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"R1{clamp(pos_b_r1):04d}", f"R0{clamp(pos_b_r0):04d}"])
 
             elif self.motion_mode == "sole_rub":
                 pos_a_r2 = center_r2 + amp_r2 * math.sin(phase_a)
@@ -296,8 +345,8 @@ class DualOSRController:
                 pos_a_r1 = center_a_r1 + amp_r1 * math.cos(phase_a)
                 pos_b_r1 = center_b_r1 + amp_r1 * math.cos(phase_b)
 
-                cmd_a_parts.extend([f"L0{clamp(center_l0):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(center_l0):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(center_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(center_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(center_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "toe_tease":
                 # Quick flickering pitch (R2) to tap the toes.
@@ -314,8 +363,8 @@ class DualOSRController:
                 # Slight pulsing L0
                 pos_l0 = center_l0 + (amp_l0 * 0.1) * math.sin(phase_a)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "edge_stroking":
                 # Feet roll heavily INWARDS (R1) to create a tight V-groove with the soles touching.
@@ -333,8 +382,8 @@ class DualOSRController:
                 # Fix pitch to stay parallel instead of bobbing up and down
                 pos_r2 = center_r2
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_r2):04d}"])
 
             elif self.motion_mode == "heel_press":
                 # Toes pitched heavily UP (away from target) to expose the heels.
@@ -348,8 +397,8 @@ class DualOSRController:
                 pos_a_r0 = center_r0 + amp_r0 * math.cos(slow_phase)
                 pos_b_r0 = center_r0 - amp_r0 * math.cos(slow_phase)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_a_r0):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_b_r0):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_a_r0):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"R2{clamp(pos_r2):04d}", f"R0{clamp(pos_b_r0):04d}"])
 
             elif self.motion_mode == "circling_tease":
                 pos_a_r1 = center_a_r1 + amp_r1 * math.sin(phase_a)
@@ -358,8 +407,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + amp_r2 * math.cos(phase_a)
                 pos_b_r2 = center_r2 + amp_r2 * math.cos(phase_a)
 
-                cmd_a_parts.extend([f"L0{clamp(center_l0):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(center_l0):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(center_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_a_r1):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(center_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(center_l2):04d}", f"R1{clamp(pos_b_r1):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
 
             elif self.motion_mode == "asymmetric_sprint":
@@ -390,8 +439,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + (amp_r2 * 0.5 * math.cos(sprint_phase) if z_motion_a != 0 else 0)
                 pos_b_r2 = center_r2 - (amp_r2 * 0.5 * math.cos(sprint_phase) if z_motion_b != 0 else 0)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(center_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(center_b_r1):04d}"])
 
             elif self.motion_mode == "foot_slap":
                 # Foot Slap V3 (严谨节奏的单脚轮流大力扇耳光)
@@ -468,8 +517,8 @@ class DualOSRController:
                     pos_b_r2 = r2_b
                     pos_b_r1 = center_b_r1
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "glans_torture":
                 # Glans Torture (龟头折磨)
@@ -499,8 +548,8 @@ class DualOSRController:
                 pos_a_r2 = center_r2 + (amp_r2 * 0.5) * math.cos(fast_phase)
                 pos_b_r2 = center_r2 - (amp_r2 * 0.5) * math.cos(fast_phase)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_b_r1):04d}"])
 
             elif self.motion_mode == "edging_sole_show":
                 # Edging Sole Show (寸止展示脚底)
@@ -537,8 +586,8 @@ class DualOSRController:
                     pos_a_r1 = center_a_r1
                     pos_b_r1 = center_b_r1
 
-                cmd_a_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}", f"R1{clamp(pos_a_r1):04d}"])
             elif self.motion_mode == "single_foot_tease_left":
                 fast_phase_a = phase_a * 2.0
                 pos_a_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_a)
@@ -551,8 +600,8 @@ class DualOSRController:
                 pos_b_l0 = center_l0
                 pos_b_l2 = center_l2
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "single_foot_tease_right":
                 fast_phase_b = phase_a * 2.0
@@ -562,8 +611,8 @@ class DualOSRController:
                 pos_b_r2 = center_r2 - (amp_r2 / 2.0) - (amp_r2 / 2.0) * math.sin(fast_phase_b)
                 pos_b_l0 = center_l0 + (amp_l0 * 0.1) * math.sin(phase_a)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"R2{clamp(pos_a_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"R2{clamp(pos_b_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"R2{clamp(pos_a_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"R2{clamp(pos_b_r2):04d}"])
 
             elif self.motion_mode == "single_foot_stroke_left":
                 z_motion_a = amp_l0 * math.sin(phase_a)
@@ -572,8 +621,8 @@ class DualOSRController:
                 pos_b_l0 = center_l0
                 pos_b_l2 = center_l2
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
 
             elif self.motion_mode == "single_foot_stroke_right":
                 pos_a_l0 = center_l0
@@ -582,14 +631,14 @@ class DualOSRController:
                 pos_b_l0 = center_l0 + z_motion_b
                 pos_b_l2 = center_l2 + (z_motion_b * l2_mult)
 
-                cmd_a_parts.extend([f"L0{clamp(pos_a_l0):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
-                cmd_b_parts.extend([f"L0{clamp(pos_b_l0):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_a_parts.extend([f"L0{clamp(pos_a_l0 + getattr(self, 'height_offset_a', 0)):04d}", f"L2{clamp(pos_a_l2):04d}", f"R2{clamp(center_r2):04d}"])
+                cmd_b_parts.extend([f"L0{clamp(pos_b_l0 + getattr(self, 'height_offset_b', 0)):04d}", f"L2{clamp(pos_b_l2):04d}", f"R2{clamp(center_r2):04d}"])
 
             else: # fallback
                 pos_a = center_l0 + amp_l0 * math.sin(phase_a)
                 pos_b = center_l0 + amp_l0 * math.sin(phase_b)
-                cmd_a_parts.append(f"L0{clamp(pos_a):04d}")
-                cmd_b_parts.append(f"L0{clamp(pos_b):04d}")
+                cmd_a_parts.append(f"L0{clamp(pos_a + getattr(self, 'height_offset_a', 0)):04d}")
+                cmd_b_parts.append(f"L0{clamp(pos_b + getattr(self, 'height_offset_b', 0)):04d}")
 
             return " ".join(cmd_a_parts), " ".join(cmd_b_parts)
 
@@ -615,12 +664,12 @@ class DualOSRController:
 
             elapsed = time.time() - start_time
             sleep_time = max(0, dt - elapsed)
-            time.sleep(sleep_time)
-
-        # Center devices on stop
-        self._send_cmd(self.ser_a, "L05000 I1000", self.ws_server_a)
-        self._send_cmd(self.ser_b, "L05000 I1000", self.ws_server_b)
-        logger.info("Motion stopped and devices centered")
+            time.sleep(sleep_time)        # Center devices on stop with offset
+        l0_a = max(0, min(9999, 5000 + self.height_offset_a))
+        l0_b = max(0, min(9999, 5000 + self.height_offset_b))
+        self._send_cmd(self.ser_a, f"L0{l0_a:04d} I1000", self.ws_server_a)
+        self._send_cmd(self.ser_b, f"L0{l0_b:04d} I1000", self.ws_server_b)
+        logger.info("Motion stopped and devices centered (with offset)")
 
 class DualOSRGui:
     def __init__(self, root):
@@ -629,11 +678,62 @@ class DualOSRGui:
         self.root.geometry("600x900")
         self.controller = DualOSRController()
 
+        # Create a main frame
+        self.main_frame = ttk.Frame(self.root)
+        self.main_frame.pack(fill=tk.BOTH, expand=1)
+
+        # Create a canvas
+        self.canvas = tk.Canvas(self.main_frame)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
+        # Add a scrollbar to the canvas
+        self.scrollbar = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure the canvas
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.bind(
+            '<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        # Create another frame inside the canvas
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        # Add that new frame to a window in the canvas
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        # Configure width of scrollable frame to match canvas
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            )
+        )
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+
+        # Bind mousewheel
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.root.bind_all("<Button-4>", self._on_mousewheel)
+        self.root.bind_all("<Button-5>", self._on_mousewheel)
+
         self.create_widgets()
 
+    def _on_canvas_configure(self, event):
+        # update inner frame width to fill the canvas
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        # Windows/Mac/Linux cross platform
+        if hasattr(event, 'num') and event.num == 5 or getattr(event, 'delta', 0) < 0:
+            self.canvas.yview_scroll(1, "units")
+        elif hasattr(event, 'num') and event.num == 4 or getattr(event, 'delta', 0) > 0:
+            self.canvas.yview_scroll(-1, "units")
+
     def create_widgets(self):
+        # Change parent frame variable for widgets
+        parent = self.scrollable_frame
         # --- WebSocket Section ---
-        ws_frame = ttk.LabelFrame(self.root, text="WebSocket Servers")
+        ws_frame = ttk.LabelFrame(self.scrollable_frame, text="WebSocket Servers")
         ws_frame.pack(fill="x", padx=10, pady=5)
 
         row_ws = ttk.Frame(ws_frame)
@@ -651,7 +751,7 @@ class DualOSRGui:
         ttk.Entry(row_ws, textvariable=self.ws_port_b, width=6).pack(side="left")
 
         # --- Connection Section ---
-        conn_frame = ttk.LabelFrame(self.root, text="Connections")
+        conn_frame = ttk.LabelFrame(self.scrollable_frame, text="Connections")
         conn_frame.pack(fill="x", padx=10, pady=5)
 
         # Device A
@@ -683,7 +783,7 @@ class DualOSRGui:
         ttk.Button(conn_frame, text="Refresh Ports", command=self.refresh_ports).pack(pady=5)
 
         # --- Motion Control Section ---
-        ctrl_frame = ttk.LabelFrame(self.root, text="Motion Control")
+        ctrl_frame = ttk.LabelFrame(self.scrollable_frame, text="Motion Control")
         ctrl_frame.pack(fill="x", padx=10, pady=5)
 
         # Speed
@@ -763,13 +863,29 @@ class DualOSRGui:
         self.reverse_l2_var = tk.BooleanVar(value=False)
         self.reverse_l2_check = ttk.Checkbutton(adv_frame, text="Reverse L2 Compensation Direction", variable=self.reverse_l2_var, command=self.update_params)
         self.reverse_l2_check.pack(anchor="w", padx=5, pady=5)
+        # --- Calibration Section ---
+        calib_frame = ttk.LabelFrame(self.scrollable_frame, text="Calibration & Initialization")
+        calib_frame.pack(fill="x", padx=10, pady=5)
+
+        self.btn_init = ttk.Button(calib_frame, text="INITIALIZE (Go to Neutral)", command=self.go_to_neutral)
+        self.btn_init.pack(fill="x", padx=5, pady=5)
+
+        ttk.Label(calib_frame, text="Height Offset A (L0):").pack(anchor="w", padx=5)
+        self.height_offset_a_var = tk.DoubleVar(value=0.0)
+        self.height_offset_a_scale = ttk.Scale(calib_frame, from_=-500, to=500, variable=self.height_offset_a_var, command=self.update_params)
+        self.height_offset_a_scale.pack(fill="x", padx=5, pady=2)
+
+        ttk.Label(calib_frame, text="Height Offset B (L0):").pack(anchor="w", padx=5)
+        self.height_offset_b_var = tk.DoubleVar(value=0.0)
+        self.height_offset_b_scale = ttk.Scale(calib_frame, from_=-500, to=500, variable=self.height_offset_b_var, command=self.update_params)
+        self.height_offset_b_scale.pack(fill="x", padx=5, pady=2)
 
         # Start/Stop
-        self.btn_start = ttk.Button(self.root, text="START MOTION", command=self.toggle_motion)
+        self.btn_start = ttk.Button(self.scrollable_frame, text="START MOTION", command=self.toggle_motion)
         self.btn_start.pack(fill="x", padx=20, pady=10, ipady=10)
 
         # --- Log Section ---
-        log_frame = ttk.LabelFrame(self.root, text="Log")
+        log_frame = ttk.LabelFrame(self.scrollable_frame, text="Log")
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
         self.log_text = scrolledtext.ScrolledText(log_frame, height=10, state='disabled')
         self.log_text.pack(fill="both", expand=True)
@@ -788,6 +904,12 @@ class DualOSRGui:
         if ports:
             if not self.port_a.get(): self.combo_a.current(0)
             if not self.port_b.get(): self.combo_b.current(0)
+
+    def go_to_neutral(self):
+        if self.controller.running:
+            logger.warning("Stop motion before initializing")
+            return
+        self.controller.go_to_neutral()
 
     def toggle_connect_a(self):
         if not self.controller.connected_a:
@@ -820,6 +942,14 @@ class DualOSRGui:
         self.controller.twist_amp = self.twist_amp_var.get()
         self.controller.reverse_l2 = self.reverse_l2_var.get()
         self.controller.tilt_compensation = self.tilt_comp_var.get()
+
+        # Height Offsets
+        self.controller.height_offset_a = int(self.height_offset_a_var.get())
+        self.controller.height_offset_b = int(self.height_offset_b_var.get())
+
+        # Update devices immediately if in initialization mode
+        if getattr(self.controller, 'is_initializing', False) and not self.controller.running:
+            self.controller.go_to_neutral()
 
         mode = self.mode_var.get()
         self.controller.motion_mode = mode
@@ -854,12 +984,15 @@ class DualOSRGui:
             self.btn_start.config(text="STOP MOTION")
         else:
             self.controller.stop_motion()
-            if self.controller.ws_server_a:
-                self.controller.ws_server_a.stop()
-                self.controller.ws_server_a = None
-            if self.controller.ws_server_b:
-                self.controller.ws_server_b.stop()
-                self.controller.ws_server_b = None
+            try:
+                if self.controller.ws_server_a:
+                    self.controller.ws_server_a.stop()
+                    self.controller.ws_server_a = None
+                if self.controller.ws_server_b:
+                    self.controller.ws_server_b.stop()
+                    self.controller.ws_server_b = None
+            except Exception as e:
+                logger.error(f"Error stopping WebSockets: {e}")
             self.btn_start.config(text="START MOTION")
 
 class TextHandler(logging.Handler):
