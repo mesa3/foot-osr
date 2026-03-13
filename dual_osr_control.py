@@ -112,43 +112,31 @@ class DualOSRController:
         self.is_initializing = False
 
 
-        # Height Offset Parameters (L0 offset)
-        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
-        self.height_offset_b = 0
-        self.is_initializing = False
+    def _connect_device(self, device_id, port, baudrate):
+        ser_attr = f"ser_{device_id}"
+        conn_attr = f"connected_{device_id}"
+        label = f"Device {device_id.upper()}"
 
+        ser = getattr(self, ser_attr)
+        if ser and ser.is_open:
+            ser.close()
 
-        # Height Offset Parameters (L0 offset)
-        self.height_offset_a = 0  # T-Code raw value offset (-9999 to 9999)
-        self.height_offset_b = 0
-        self.is_initializing = False
-
+        try:
+            new_ser = serial.Serial(port, baudrate, timeout=0.1)
+            setattr(self, ser_attr, new_ser)
+            setattr(self, conn_attr, True)
+            logger.info(f"Connected {label} on {port}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect {label}: {e}")
+            setattr(self, conn_attr, False)
+            return False
 
     def connect_device_a(self, port, baudrate=115200):
-        if self.ser_a and self.ser_a.is_open:
-            self.ser_a.close()
-        try:
-            self.ser_a = serial.Serial(port, baudrate, timeout=0.1)
-            self.connected_a = True
-            logger.info(f"Connected Device A on {port}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect Device A: {e}")
-            self.connected_a = False
-            return False
+        return self._connect_device('a', port, baudrate)
 
     def connect_device_b(self, port, baudrate=115200):
-        if self.ser_b and self.ser_b.is_open:
-            self.ser_b.close()
-        try:
-            self.ser_b = serial.Serial(port, baudrate, timeout=0.1)
-            self.connected_b = True
-            logger.info(f"Connected Device B on {port}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect Device B: {e}")
-            self.connected_b = False
-            return False
+        return self._connect_device('b', port, baudrate)
 
     def disconnect_all(self):
         self.running = False
@@ -911,25 +899,29 @@ class DualOSRGui:
             return
         self.controller.go_to_neutral()
 
-    def toggle_connect_a(self):
-        if not self.controller.connected_a:
-            if self.controller.connect_device_a(self.port_a.get(), self.baud_var.get()):
-                self.btn_connect_a.config(text="Disconnect")
+    def _toggle_connect(self, device_id):
+        is_connected = getattr(self.controller, f"connected_{device_id}")
+        btn = getattr(self, f"btn_connect_{device_id}")
+        port = getattr(self, f"port_{device_id}").get()
+        baud = self.baud_var.get()
+
+        if not is_connected:
+            connect_method = getattr(self.controller, f"connect_device_{device_id}")
+            if connect_method(port, baud):
+                btn.config(text="Disconnect")
         else:
-            self.controller.ser_a.close()
-            self.controller.connected_a = False
-            self.btn_connect_a.config(text="Connect")
-            logger.info("Device A disconnected")
+            ser = getattr(self.controller, f"ser_{device_id}")
+            if ser:
+                ser.close()
+            setattr(self.controller, f"connected_{device_id}", False)
+            btn.config(text="Connect")
+            logger.info(f"Device {device_id.upper()} disconnected")
+
+    def toggle_connect_a(self):
+        self._toggle_connect('a')
 
     def toggle_connect_b(self):
-        if not self.controller.connected_b:
-            if self.controller.connect_device_b(self.port_b.get(), self.baud_var.get()):
-                self.btn_connect_b.config(text="Disconnect")
-        else:
-            self.controller.ser_b.close()
-            self.controller.connected_b = False
-            self.btn_connect_b.config(text="Connect")
-            logger.info("Device B disconnected")
+        self._toggle_connect('b')
 
     def update_params(self, _=None):
         self.controller.speed = self.speed_var.get()
